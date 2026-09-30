@@ -8,6 +8,7 @@
 import SwiftUI
 import RealityKit
 import ARKit
+import simd
 
 struct ARViewContainer: UIViewRepresentable {
   func makeCoordinator() -> Coordinator {
@@ -15,6 +16,48 @@ struct ARViewContainer: UIViewRepresentable {
   }
   class Coordinator: NSObject, ARSessionDelegate {
     var lastPrintTime: TimeInterval = 0
+
+    func getCloud(depthBuf: CVPixelBuffer, intrinsics: simd_float3x3, width: Int, height: Int, rgbWidth: Int) -> [SIMD3<Float>] {
+
+      let factor = Float(rgbWidth) / Float(width)
+      let fx = intrinsics[0,0] / factor
+      let fy = intrinsics[1,1] / factor
+      let cx = intrinsics[2,0] / factor
+      let cy = intrinsics[2,1] / factor
+
+      var cloud: [SIMD3<Float>] = []
+
+      let lockFlags = CVPixelBufferLockFlags.readOnly
+      let status = CVPixelBufferLockBaseAddress(depthBuf, lockFlags)
+      guard status == kCVReturnSuccess else {
+        print("Failed to lock pixel buffer base address")
+        return cloud
+      }
+      defer {
+        CVPixelBufferUnlockBaseAddress(depthBuf, lockFlags)
+      }
+      guard let baseAddress = CVPixelBufferGetBaseAddress(depthBuf) else {
+        print("Could not get base address")
+        return cloud
+      }
+      let floatsPerRow = CVPixelBufferGetBytesPerRow(depthBuf) / MemoryLayout<Float32>.stride
+      let byteBuf = baseAddress.assumingMemoryBound(to: Float32.self)
+      for v in 0..<height {
+        for u in 0..<width {
+          let pixelIdx = (v * floatsPerRow) + u
+          let depth = byteBuf[pixelIdx]
+          if depth <= 0 || depth.isNaN {
+            continue
+          }
+          let x = (Float(u) - cx) * depth / fx
+          let y = (Float(v) - cy) * depth / fy
+          let point = SIMD3<Float>(x: x, y: y, z: depth)
+          cloud.append(point)
+        }
+      }
+      return cloud
+    }
+
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
       guard frame.timestamp - lastPrintTime > 1.0 else { return }
       if let depthData = frame.sceneDepth {
@@ -26,24 +69,33 @@ struct ARViewContainer: UIViewRepresentable {
         let imWidth = CVPixelBufferGetWidth(img)
         let imHeight = CVPixelBufferGetHeight(img)
         print("RGB image: \(imWidth)x\(imHeight)")
-        let lockFlags = CVPixelBufferLockFlags.readOnly
-        let status = CVPixelBufferLockBaseAddress(buf, lockFlags)
-        guard status == kCVReturnSuccess else {
-          print("Failed to lock pixel buffer base address")
-          return
+        let cloud: [SIMD3<Float>] = getCloud(depthBuf: buf, intrinsics: frame.camera.intrinsics, width: width, height: height, rgbWidth: imWidth)
+        let numPoints = cloud.count
+        print("Points in depth cloud: \(numPoints)")
+        var lo = [Float.infinity, Float.infinity, Float.infinity]
+        var hi = [-Float.infinity, -Float.infinity, -Float.infinity]
+        for point in cloud {
+          if point.x < lo[0] {
+            lo[0] = point.x
+          }
+          if point.x > hi[0] {
+            hi[0] = point.x
+          }
+          if point.y < lo[1] {
+            lo[1] = point.y
+          }
+          if point.y > hi[1] {
+            hi[1] = point.y
+          }
+          if point.z < lo[2] {
+            lo[2] = point.z
+          }
+          if point.z > hi[2] {
+            hi[2] = point.z
+          }
         }
-        defer {
-          CVPixelBufferUnlockBaseAddress(buf, lockFlags)
-        }
-        guard let baseAddress = CVPixelBufferGetBaseAddress(buf) else {
-          print("Could not get base address")
-          return
-        }
-        let floatsPerRow = CVPixelBufferGetBytesPerRow(buf) / MemoryLayout<Float32>.stride
-        let byteBuf = baseAddress.assumingMemoryBound(to: Float32.self)
-        let pixelIdx = (96 * floatsPerRow) + 128
-        let dist = byteBuf[pixelIdx]
-        print("Distance from center pixel: \(dist)")
+        print("Min XYZ: \(lo)")
+        print("Max XYZ: \(hi)")
       } else {
         print("SceneDepth is nil")
       }
