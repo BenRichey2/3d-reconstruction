@@ -16,6 +16,34 @@ struct ARViewContainer: UIViewRepresentable {
   }
   class Coordinator: NSObject, ARSessionDelegate {
     var lastPrintTime: TimeInterval = 0
+    var savedOne = false
+
+    func serializeCloud(cloud: [SIMD3<Float>]) -> String {
+      var strCloud = "ply\nformat ascii 1.0\n"
+      strCloud += "element vertex \(cloud.count)\n"
+      strCloud += "property float x\n"
+      strCloud += "property float y\n"
+      strCloud += "property float z\n"
+      strCloud += "end_header"
+      for point in cloud {
+        strCloud += "\n\(point.x) \(point.y) \(point.z)"
+      }
+      return strCloud
+    }
+
+    func saveCloud(cloud: [SIMD3<Float>]) {
+      guard let docDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+          print("ERROR: failed to get documents directory")
+          return
+      }
+      let fileURL = docDirectory.appendingPathComponent("cloud.ply")
+
+      do {
+          try serializeCloud(cloud: cloud).write(to: fileURL, atomically: true, encoding: .ascii)
+      } catch {
+        print("Failed to save file: \(error)")
+      }
+    }
 
     func getCloud(depthBuf: CVPixelBuffer, intrinsics: simd_float3x3, width: Int, height: Int, rgbWidth: Int) -> [SIMD3<Float>] {
 
@@ -96,6 +124,10 @@ struct ARViewContainer: UIViewRepresentable {
         }
         print("Min XYZ: \(lo)")
         print("Max XYZ: \(hi)")
+        if frame.camera.trackingState == .normal && !savedOne {
+          saveCloud(cloud: cloud)
+          savedOne = true
+        }
       } else {
         print("SceneDepth is nil")
       }
