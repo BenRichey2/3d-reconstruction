@@ -5,10 +5,13 @@
 //  Created by Ben Richey on 9/17/26.
 //
 
+import Foundation
 import SwiftUI
 import RealityKit
 import ARKit
 import simd
+
+var buttonPressed = false
 
 struct ARViewContainer: UIViewRepresentable {
   func makeCoordinator() -> Coordinator {
@@ -16,7 +19,6 @@ struct ARViewContainer: UIViewRepresentable {
   }
   class Coordinator: NSObject, ARSessionDelegate {
     var lastPrintTime: TimeInterval = 0
-    var savedOne = false
 
     func serializeCloud(cloud: [SIMD3<Float>]) -> String {
       var strCloud = "ply\nformat ascii 1.0\n"
@@ -24,9 +26,9 @@ struct ARViewContainer: UIViewRepresentable {
       strCloud += "property float x\n"
       strCloud += "property float y\n"
       strCloud += "property float z\n"
-      strCloud += "end_header"
+      strCloud += "end_header\n"
       for point in cloud {
-        strCloud += "\n\(point.x) \(point.y) \(point.z)"
+        strCloud += "\(point.x) \(point.y) \(point.z)\n"
       }
       return strCloud
     }
@@ -36,7 +38,10 @@ struct ARViewContainer: UIViewRepresentable {
           print("ERROR: failed to get documents directory")
           return
       }
-      let fileURL = docDirectory.appendingPathComponent("cloud.ply")
+      let formatter = DateFormatter()
+      formatter.dateFormat = "yyyy-MM-dd-HH-mm-ss"
+      let dateStr = formatter.string(from: Date())
+      let fileURL = docDirectory.appendingPathComponent("cloud_\(dateStr).ply")
 
       do {
           try serializeCloud(cloud: cloud).write(to: fileURL, atomically: true, encoding: .ascii)
@@ -87,7 +92,8 @@ struct ARViewContainer: UIViewRepresentable {
     }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
-      guard frame.timestamp - lastPrintTime > 1.0 else { return }
+      guard frame.camera.trackingState == .normal && buttonPressed else { return }
+      buttonPressed = false
       if let depthData = frame.sceneDepth {
         let buf: CVPixelBuffer = depthData.depthMap
         let width = CVPixelBufferGetWidth(buf)
@@ -124,22 +130,11 @@ struct ARViewContainer: UIViewRepresentable {
         }
         print("Min XYZ: \(lo)")
         print("Max XYZ: \(hi)")
-        if frame.camera.trackingState == .normal && !savedOne {
-          saveCloud(cloud: cloud)
-          savedOne = true
-        }
+        saveCloud(cloud: cloud)
+        print("Button has been pressed!")
       } else {
         print("SceneDepth is nil")
       }
-      lastPrintTime = frame.timestamp
-      print("Intrinsics:")
-      print(frame.camera.intrinsics)
-      print("Transform:")
-      print(frame.camera.transform)
-      print("Timestamp:")
-      print(frame.timestamp)
-      print("Tracking state:")
-      print(frame.camera.trackingState)
     }
   }
   func makeUIView(context: Context) -> ARView {
@@ -157,7 +152,16 @@ struct ARViewContainer: UIViewRepresentable {
 
 struct ContentView: View {
     var body: some View {
-      ARViewContainer().ignoresSafeArea()
+      ARViewContainer()
+        .ignoresSafeArea()
+        .overlay(
+          Button("Save .ply") {
+            buttonPressed = true
+          }
+          .buttonStyle(.borderedProminent)
+          .padding(.bottom, 30)
+          , alignment: .bottom
+        )
     }
 }
 
