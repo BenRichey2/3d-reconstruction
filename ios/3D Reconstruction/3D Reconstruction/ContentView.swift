@@ -115,6 +115,18 @@ struct ARViewContainer: UIViewRepresentable {
       return cloud
     }
 
+    func cameraToWorldCoord(
+      cloud: [SIMD3<Float>],
+      transform: simd_float4x4
+    ) -> [SIMD3<Float>] {
+      var worldCloud: [SIMD3<Float>] = []
+      for point in cloud {
+        let res = transform * SIMD4<Float>(x: point.x, y: -point.y, z: -point.z, w: 1)
+        worldCloud.append(SIMD3<Float>(x: res.x, y: res.y, z: res.z))
+      }
+      return worldCloud
+    }
+
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
       guard frame.camera.trackingState == .normal
         && buttonPressed else { return }
@@ -125,13 +137,14 @@ struct ARViewContainer: UIViewRepresentable {
         let height = CVPixelBufferGetHeight(buf)
         let img: CVPixelBuffer = frame.capturedImage
         let imWidth = CVPixelBufferGetWidth(img)
-        let cloud: [SIMD3<Float>] = getCloud(
+        var cloud: [SIMD3<Float>] = getCloud(
           depthBuf: buf,
           intrinsics: frame.camera.intrinsics,
           width: width,
           height: height,
           rgbWidth: imWidth
         )
+        cloud = cameraToWorldCoord(cloud: cloud, transform: frame.camera.transform)
         if saveCloud(cloud: cloud) {
           print("Saved cloud with \(cloud.count) points")
         }
