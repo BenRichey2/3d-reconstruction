@@ -14,11 +14,12 @@ import simd
 var buttonPressed = false
 
 struct ARViewContainer: UIViewRepresentable {
+
   func makeCoordinator() -> Coordinator {
     Coordinator()
   }
+
   class Coordinator: NSObject, ARSessionDelegate {
-    var lastPrintTime: TimeInterval = 0
 
     func serializeCloud(cloud: [SIMD3<Float>]) -> String {
       var strCloud = "ply\nformat ascii 1.0\n"
@@ -33,24 +34,41 @@ struct ARViewContainer: UIViewRepresentable {
       return strCloud
     }
 
-    func saveCloud(cloud: [SIMD3<Float>]) {
-      guard let docDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+    func saveCloud(cloud: [SIMD3<Float>]) -> Bool {
+      guard let docDirectory = FileManager.default.urls(
+        for: .documentDirectory, in: .userDomainMask
+      ).first else {
           print("ERROR: failed to get documents directory")
-          return
+          return false
       }
       let formatter = DateFormatter()
       formatter.dateFormat = "yyyy-MM-dd-HH-mm-ss"
       let dateStr = formatter.string(from: Date())
-      let fileURL = docDirectory.appendingPathComponent("cloud_\(dateStr).ply")
+      let fileURL = docDirectory.appendingPathComponent(
+        "cloud_\(dateStr).ply"
+      )
 
       do {
-          try serializeCloud(cloud: cloud).write(to: fileURL, atomically: true, encoding: .ascii)
+        try serializeCloud(cloud: cloud)
+          .write(
+            to: fileURL,
+            atomically: true,
+            encoding: .ascii
+          )
       } catch {
         print("Failed to save file: \(error)")
+        return false
       }
+      return true
     }
 
-    func getCloud(depthBuf: CVPixelBuffer, intrinsics: simd_float3x3, width: Int, height: Int, rgbWidth: Int) -> [SIMD3<Float>] {
+    func getCloud(
+      depthBuf: CVPixelBuffer,
+      intrinsics: simd_float3x3,
+      width: Int,
+      height: Int,
+      rgbWidth: Int
+    ) -> [SIMD3<Float>] {
 
       let factor = Float(rgbWidth) / Float(width)
       let fx = intrinsics[0,0] / factor
@@ -69,12 +87,18 @@ struct ARViewContainer: UIViewRepresentable {
       defer {
         CVPixelBufferUnlockBaseAddress(depthBuf, lockFlags)
       }
-      guard let baseAddress = CVPixelBufferGetBaseAddress(depthBuf) else {
+      guard let baseAddress = CVPixelBufferGetBaseAddress(
+        depthBuf
+      ) else {
         print("Could not get base address")
         return cloud
       }
-      let floatsPerRow = CVPixelBufferGetBytesPerRow(depthBuf) / MemoryLayout<Float32>.stride
-      let byteBuf = baseAddress.assumingMemoryBound(to: Float32.self)
+      let floatsPerRow = CVPixelBufferGetBytesPerRow(
+        depthBuf
+      ) / MemoryLayout<Float32>.stride
+      let byteBuf = baseAddress.assumingMemoryBound(
+        to: Float32.self
+      )
       for v in 0..<height {
         for u in 0..<width {
           let pixelIdx = (v * floatsPerRow) + u
@@ -92,61 +116,44 @@ struct ARViewContainer: UIViewRepresentable {
     }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
-      guard frame.camera.trackingState == .normal && buttonPressed else { return }
-      buttonPressed = false
+      guard frame.camera.trackingState == .normal
+        && buttonPressed else { return }
       if let depthData = frame.sceneDepth {
+        buttonPressed = false
         let buf: CVPixelBuffer = depthData.depthMap
         let width = CVPixelBufferGetWidth(buf)
         let height = CVPixelBufferGetHeight(buf)
-        print("Depth map: \(width)x\(height)")
         let img: CVPixelBuffer = frame.capturedImage
         let imWidth = CVPixelBufferGetWidth(img)
-        let imHeight = CVPixelBufferGetHeight(img)
-        print("RGB image: \(imWidth)x\(imHeight)")
-        let cloud: [SIMD3<Float>] = getCloud(depthBuf: buf, intrinsics: frame.camera.intrinsics, width: width, height: height, rgbWidth: imWidth)
-        let numPoints = cloud.count
-        print("Points in depth cloud: \(numPoints)")
-        var lo = [Float.infinity, Float.infinity, Float.infinity]
-        var hi = [-Float.infinity, -Float.infinity, -Float.infinity]
-        for point in cloud {
-          if point.x < lo[0] {
-            lo[0] = point.x
-          }
-          if point.x > hi[0] {
-            hi[0] = point.x
-          }
-          if point.y < lo[1] {
-            lo[1] = point.y
-          }
-          if point.y > hi[1] {
-            hi[1] = point.y
-          }
-          if point.z < lo[2] {
-            lo[2] = point.z
-          }
-          if point.z > hi[2] {
-            hi[2] = point.z
-          }
+        let cloud: [SIMD3<Float>] = getCloud(
+          depthBuf: buf,
+          intrinsics: frame.camera.intrinsics,
+          width: width,
+          height: height,
+          rgbWidth: imWidth
+        )
+        if saveCloud(cloud: cloud) {
+          print("Saved cloud with \(cloud.count) points")
         }
-        print("Min XYZ: \(lo)")
-        print("Max XYZ: \(hi)")
-        saveCloud(cloud: cloud)
-        print("Button has been pressed!")
       } else {
         print("SceneDepth is nil")
       }
     }
   }
+
   func makeUIView(context: Context) -> ARView {
     let arView = ARView(frame: .zero)
     arView.session.delegate = context.coordinator
     let config = ARWorldTrackingConfiguration()
-    if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
+    if ARWorldTrackingConfiguration.supportsFrameSemantics(
+      .sceneDepth
+    ) {
       config.frameSemantics.insert(.sceneDepth)
     }
     arView.session.run(config)
     return arView
   }
+
   func updateUIView(_ uiView: ARView, context: Context) {}
 }
 
