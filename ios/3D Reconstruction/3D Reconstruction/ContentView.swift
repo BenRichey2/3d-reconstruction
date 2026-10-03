@@ -21,6 +21,10 @@ struct ARViewContainer: UIViewRepresentable {
 
   class Coordinator: NSObject, ARSessionDelegate {
 
+    var lastKeyFrameTransform: simd_float4x4? = nil
+    let transThresh = Float(0.05) // 5 cm
+    let rotThresh = Float(10.0)     // 10 degrees
+
     func serializeCloud(cloud: [SIMD3<Float>]) -> String {
       var strCloud = "ply\nformat ascii 1.0\n"
       strCloud += "element vertex \(cloud.count)\n"
@@ -127,26 +131,63 @@ struct ARViewContainer: UIViewRepresentable {
       return worldCloud
     }
 
+    func isKeyFrame(transform: simd_float4x4) -> Bool {
+      if lastKeyFrameTransform == nil {
+        lastKeyFrameTransform = transform
+        return false
+      }
+      if let lastTransform = lastKeyFrameTransform {
+        // Get euclidean distance from last frame to current frame translation
+        let lastTrans = lastTransform[3]
+        let currentTrans = transform[3]
+        let xDist = pow(lastTrans.x - currentTrans.x, 2)
+        let yDist = pow(lastTrans.y - currentTrans.y, 2)
+        let zDist = pow(lastTrans.z - currentTrans.z, 2)
+        let transDist = (xDist + yDist + zDist).squareRoot()
+        if transDist >= transThresh {
+          lastKeyFrameTransform = transform
+          return true
+        }
+        // Get rotational difference from last frame to current frame orientation
+        let lastQuat = simd_quaternion(lastTransform)
+        let currentQuat = simd_quaternion(transform)
+        let lastQn = lastQuat / simd_length(lastQuat)
+        let currentQn = currentQuat / simd_length(currentQuat)
+        let dot = simd_dot(lastQn, currentQn)
+        let angle = 2.0 * acos(min(1, abs(dot))) * 180.0 / .pi
+        if angle > rotThresh {
+          lastKeyFrameTransform = transform
+          return true
+        }
+      }
+      return false
+    }
+
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
       guard frame.camera.trackingState == .normal
         && buttonPressed else { return }
       if let depthData = frame.sceneDepth {
         buttonPressed = false
-        let buf: CVPixelBuffer = depthData.depthMap
-        let width = CVPixelBufferGetWidth(buf)
-        let height = CVPixelBufferGetHeight(buf)
-        let img: CVPixelBuffer = frame.capturedImage
-        let imWidth = CVPixelBufferGetWidth(img)
-        var cloud: [SIMD3<Float>] = getCloud(
-          depthBuf: buf,
-          intrinsics: frame.camera.intrinsics,
-          width: width,
-          height: height,
-          rgbWidth: imWidth
-        )
-        cloud = cameraToWorldCoord(cloud: cloud, transform: frame.camera.transform)
-        if saveCloud(cloud: cloud) {
-          print("Saved cloud with \(cloud.count) points")
+        if isKeyFrame(transform: frame.camera.transform) {
+          let buf: CVPixelBuffer = depthData.depthMap
+          let width = CVPixelBufferGetWidth(buf)
+          let height = CVPixelBufferGetHeight(buf)
+          let img: CVPixelBuffer = frame.capturedImage
+          let imWidth = CVPixelBufferGetWidth(img)
+          var cloud: [SIMD3<Float>] = getCloud(
+            depthBuf: buf,
+            intrinsics: frame.camera.intrinsics,
+            width: width,
+            height: height,
+            rgbWidth: imWidth
+          )
+          cloud = cameraToWorldCoord(
+            cloud: cloud,
+            transform: frame.camera.transform
+          )
+          if saveCloud(cloud: cloud) {
+            print("Saved cloud with \(cloud.count) points")
+          }
         }
       } else {
         print("SceneDepth is nil")
