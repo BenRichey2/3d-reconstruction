@@ -82,6 +82,7 @@ struct ARViewContainer: UIViewRepresentable {
 
     func getCloud(
       depthBuf: CVPixelBuffer,
+      confBuf: CVPixelBuffer,
       intrinsics: simd_float3x3,
       width: Int,
       height: Int,
@@ -98,17 +99,25 @@ struct ARViewContainer: UIViewRepresentable {
 
       let lockFlags = CVPixelBufferLockFlags.readOnly
       let status = CVPixelBufferLockBaseAddress(depthBuf, lockFlags)
-      guard status == kCVReturnSuccess else {
-        print("Failed to lock pixel buffer base address")
+      let status2 = CVPixelBufferLockBaseAddress(confBuf, lockFlags)
+      guard status == kCVReturnSuccess && status2 == kCVReturnSuccess else {
+        print("Failed to lock pixel/confidence map buffer base address")
         return cloud
       }
       defer {
         CVPixelBufferUnlockBaseAddress(depthBuf, lockFlags)
+        CVPixelBufferUnlockBaseAddress(confBuf, lockFlags)
       }
       guard let baseAddress = CVPixelBufferGetBaseAddress(
         depthBuf
       ) else {
-        print("Could not get base address")
+        print("Could not get base address for depth pixels")
+        return cloud
+      }
+      guard let baseConfAddress = CVPixelBufferGetBaseAddress(
+        confBuf
+      ) else {
+        print("Could not get base address for confidence map")
         return cloud
       }
       let floatsPerRow = CVPixelBufferGetBytesPerRow(
@@ -117,8 +126,19 @@ struct ARViewContainer: UIViewRepresentable {
       let byteBuf = baseAddress.assumingMemoryBound(
         to: Float32.self
       )
+      let uint8sPerRow = CVPixelBufferGetBytesPerRow(
+        confBuf
+      ) / MemoryLayout<UInt8>.stride
+      let byteConfBuf = baseConfAddress.assumingMemoryBound(
+        to: UInt8.self
+      )
       for v in 0..<height {
         for u in 0..<width {
+          let confIdx = (v * uint8sPerRow) + u
+          let conf = byteConfBuf[confIdx]
+          if conf != UInt8(2) {
+            continue
+          }
           let pixelIdx = (v * floatsPerRow) + u
           let depth = byteBuf[pixelIdx]
           if depth <= 0 || depth.isNaN {
@@ -188,18 +208,21 @@ struct ARViewContainer: UIViewRepresentable {
           let height = CVPixelBufferGetHeight(buf)
           let img: CVPixelBuffer = frame.capturedImage
           let imWidth = CVPixelBufferGetWidth(img)
-          var cloud: [SIMD3<Float>] = getCloud(
-            depthBuf: buf,
-            intrinsics: frame.camera.intrinsics,
-            width: width,
-            height: height,
-            rgbWidth: imWidth
-          )
-          scanState.points = scanState.points + cameraToWorldCoord(
-            cloud: cloud,
-            transform: frame.camera.transform
-          )
-          print("Point cloud has \(scanState.points.count) points and \(scanState.numKeyFrames) key frames.")
+          if let confBuf: CVPixelBuffer = depthData.confidenceMap {
+            let cloud: [SIMD3<Float>] = getCloud(
+              depthBuf: buf,
+              confBuf: confBuf,
+              intrinsics: frame.camera.intrinsics,
+              width: width,
+              height: height,
+              rgbWidth: imWidth
+            )
+            scanState.points = scanState.points + cameraToWorldCoord(
+              cloud: cloud,
+              transform: frame.camera.transform
+            )
+            print("Point cloud has \(scanState.points.count) points and \(scanState.numKeyFrames) key frames.")
+          }
         }
       } else {
         print("SceneDepth is nil")
