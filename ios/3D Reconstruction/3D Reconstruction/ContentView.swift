@@ -11,60 +11,74 @@ import RealityKit
 import ARKit
 import simd
 
-var buttonPressed = false
+@Observable class ScanState {
+  var isScanning = false
+  var scanStatus = "Begin Scan"
+  var points: [SIMD3<Float>] = []
+  var numKeyFrames = 0
+}
+
+func serializeCloud(cloud: [SIMD3<Float>]) -> String {
+  var strCloud = "ply\nformat ascii 1.0\n"
+  strCloud += "element vertex \(cloud.count)\n"
+  strCloud += "property float x\n"
+  strCloud += "property float y\n"
+  strCloud += "property float z\n"
+  strCloud += "end_header\n"
+  for point in cloud {
+    strCloud += "\(point.x) \(point.y) \(point.z)\n"
+  }
+  return strCloud
+}
+
+func saveCloud(cloud: [SIMD3<Float>]) -> Bool {
+  guard let docDirectory = FileManager.default.urls(
+    for: .documentDirectory, in: .userDomainMask
+  ).first else {
+      print("ERROR: failed to get documents directory")
+      return false
+  }
+  let formatter = DateFormatter()
+  formatter.dateFormat = "yyyy-MM-dd-HH-mm-ss"
+  let dateStr = formatter.string(from: Date())
+  let fileURL = docDirectory.appendingPathComponent(
+    "cloud_\(dateStr).ply"
+  )
+
+  do {
+    try serializeCloud(cloud: cloud)
+      .write(
+        to: fileURL,
+        atomically: true,
+        encoding: .ascii
+      )
+  } catch {
+    print("Failed to save file: \(error)")
+    return false
+  }
+  return true
+}
 
 struct ARViewContainer: UIViewRepresentable {
 
+  var scanState: ScanState
+
   func makeCoordinator() -> Coordinator {
-    Coordinator()
+    Coordinator(state: scanState)
   }
 
   class Coordinator: NSObject, ARSessionDelegate {
 
+      init(state: ScanState) {
+          self.scanState = state
+          super.init()
+    }
+
+    var scanState: ScanState
     var lastKeyFrameTransform: simd_float4x4? = nil
     let transThresh = Float(0.05) // 5 cm
     let rotThresh = Float(10.0)     // 10 degrees
 
-    func serializeCloud(cloud: [SIMD3<Float>]) -> String {
-      var strCloud = "ply\nformat ascii 1.0\n"
-      strCloud += "element vertex \(cloud.count)\n"
-      strCloud += "property float x\n"
-      strCloud += "property float y\n"
-      strCloud += "property float z\n"
-      strCloud += "end_header\n"
-      for point in cloud {
-        strCloud += "\(point.x) \(point.y) \(point.z)\n"
-      }
-      return strCloud
-    }
-
-    func saveCloud(cloud: [SIMD3<Float>]) -> Bool {
-      guard let docDirectory = FileManager.default.urls(
-        for: .documentDirectory, in: .userDomainMask
-      ).first else {
-          print("ERROR: failed to get documents directory")
-          return false
-      }
-      let formatter = DateFormatter()
-      formatter.dateFormat = "yyyy-MM-dd-HH-mm-ss"
-      let dateStr = formatter.string(from: Date())
-      let fileURL = docDirectory.appendingPathComponent(
-        "cloud_\(dateStr).ply"
-      )
-
-      do {
-        try serializeCloud(cloud: cloud)
-          .write(
-            to: fileURL,
-            atomically: true,
-            encoding: .ascii
-          )
-      } catch {
-        print("Failed to save file: \(error)")
-        return false
-      }
-      return true
-    }
 
     func getCloud(
       depthBuf: CVPixelBuffer,
@@ -165,10 +179,10 @@ struct ARViewContainer: UIViewRepresentable {
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
       guard frame.camera.trackingState == .normal
-        && buttonPressed else { return }
+        && scanState.isScanning else { return }
       if let depthData = frame.sceneDepth {
-        buttonPressed = false
         if isKeyFrame(transform: frame.camera.transform) {
+          scanState.numKeyFrames += 1
           let buf: CVPixelBuffer = depthData.depthMap
           let width = CVPixelBufferGetWidth(buf)
           let height = CVPixelBufferGetHeight(buf)
@@ -181,13 +195,11 @@ struct ARViewContainer: UIViewRepresentable {
             height: height,
             rgbWidth: imWidth
           )
-          cloud = cameraToWorldCoord(
+          scanState.points = scanState.points + cameraToWorldCoord(
             cloud: cloud,
             transform: frame.camera.transform
           )
-          if saveCloud(cloud: cloud) {
-            print("Saved cloud with \(cloud.count) points")
-          }
+          print("Point cloud has \(scanState.points.count) points and \(scanState.numKeyFrames) key frames.")
         }
       } else {
         print("SceneDepth is nil")
@@ -212,12 +224,21 @@ struct ARViewContainer: UIViewRepresentable {
 }
 
 struct ContentView: View {
+    var state = ScanState()
     var body: some View {
-      ARViewContainer()
+      ARViewContainer(scanState: state)
         .ignoresSafeArea()
         .overlay(
-          Button("Save .ply") {
-            buttonPressed = true
+          Button(state.scanStatus) {
+            state.isScanning = !state.isScanning
+            if state.isScanning {
+              state.scanStatus = "End Scan"
+            } else {
+              state.scanStatus = "Begin Scan"
+              if saveCloud(cloud: state.points) {
+                print("Saved cloud with \(state.points.count) points")
+              }
+            }
           }
           .buttonStyle(.borderedProminent)
           .padding(.bottom, 30)
