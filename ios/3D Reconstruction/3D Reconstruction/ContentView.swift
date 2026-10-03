@@ -16,6 +16,7 @@ import simd
   var scanStatus = "Begin Scan"
   var points: [SIMD3<Float>] = []
   var numKeyFrames = 0
+  var lastKeyFrameTransform: simd_float4x4? = nil
 }
 
 func serializeCloud(cloud: [SIMD3<Float>]) -> String {
@@ -75,7 +76,6 @@ struct ARViewContainer: UIViewRepresentable {
     }
 
     var scanState: ScanState
-    var lastKeyFrameTransform: simd_float4x4? = nil
     let transThresh = Float(0.05) // 5 cm
     let rotThresh = Float(10.0)     // 10 degrees
 
@@ -166,11 +166,11 @@ struct ARViewContainer: UIViewRepresentable {
     }
 
     func isKeyFrame(transform: simd_float4x4) -> Bool {
-      if lastKeyFrameTransform == nil {
-        lastKeyFrameTransform = transform
+      if scanState.lastKeyFrameTransform == nil {
+        scanState.lastKeyFrameTransform = transform
         return false
       }
-      if let lastTransform = lastKeyFrameTransform {
+      if let lastTransform = scanState.lastKeyFrameTransform {
         // Get euclidean distance from last frame to current frame translation
         let lastTrans = lastTransform[3]
         let currentTrans = transform[3]
@@ -179,7 +179,7 @@ struct ARViewContainer: UIViewRepresentable {
         let zDist = pow(lastTrans.z - currentTrans.z, 2)
         let transDist = (xDist + yDist + zDist).squareRoot()
         if transDist >= transThresh {
-          lastKeyFrameTransform = transform
+          scanState.lastKeyFrameTransform = transform
           return true
         }
         // Get rotational difference from last frame to current frame orientation
@@ -190,7 +190,7 @@ struct ARViewContainer: UIViewRepresentable {
         let dot = simd_dot(lastQn, currentQn)
         let angle = 2.0 * acos(min(1, abs(dot))) * 180.0 / .pi
         if angle > rotThresh {
-          lastKeyFrameTransform = transform
+          scanState.lastKeyFrameTransform = transform
           return true
         }
       }
@@ -202,7 +202,6 @@ struct ARViewContainer: UIViewRepresentable {
         && scanState.isScanning else { return }
       if let depthData = frame.sceneDepth {
         if isKeyFrame(transform: frame.camera.transform) {
-          scanState.numKeyFrames += 1
           let buf: CVPixelBuffer = depthData.depthMap
           let width = CVPixelBufferGetWidth(buf)
           let height = CVPixelBufferGetHeight(buf)
@@ -217,10 +216,11 @@ struct ARViewContainer: UIViewRepresentable {
               height: height,
               rgbWidth: imWidth
             )
-            scanState.points = scanState.points + cameraToWorldCoord(
+            scanState.points.append(contentsOf: cameraToWorldCoord(
               cloud: cloud,
               transform: frame.camera.transform
-            )
+            ))
+            scanState.numKeyFrames += 1
             print("Point cloud has \(scanState.points.count) points and \(scanState.numKeyFrames) key frames.")
           }
         }
@@ -247,7 +247,7 @@ struct ARViewContainer: UIViewRepresentable {
 }
 
 struct ContentView: View {
-    var state = ScanState()
+    @State var state = ScanState()
     var body: some View {
       ARViewContainer(scanState: state)
         .ignoresSafeArea()
@@ -257,10 +257,13 @@ struct ContentView: View {
             if state.isScanning {
               state.scanStatus = "End Scan"
             } else {
-              state.scanStatus = "Begin Scan"
               if saveCloud(cloud: state.points) {
                 print("Saved cloud with \(state.points.count) points")
               }
+              state.scanStatus = "Begin Scan"
+              state.points = []
+              state.numKeyFrames = 0
+              state.lastKeyFrameTransform = nil
             }
           }
           .buttonStyle(.borderedProminent)
