@@ -11,12 +11,25 @@ import RealityKit
 import ARKit
 import simd
 
+struct VoxelState {
+  var sum: SIMD3<Float>
+  var count: Int
+}
+
+extension VoxelState {
+  static func += (left:  inout VoxelState, right: VoxelState) {
+    left.sum += right.sum
+    left.count += right.count
+  }
+}
+
 @Observable class ScanState {
   var isScanning = false
   var scanStatus = "Begin Scan"
-  var points: [SIMD3<Float>] = []
+  @ObservationIgnored var voxels: [SIMD3<Int32>: VoxelState] = [:]
   var numKeyFrames = 0
   var lastKeyFrameTransform: simd_float4x4? = nil
+  let voxelPerDimRes: Float = 0.02 // 8 cubic centimeters (2 centimeters per dimension)
 }
 
 func serializeCloud(cloud: [SIMD3<Float>]) -> String {
@@ -32,7 +45,7 @@ func serializeCloud(cloud: [SIMD3<Float>]) -> String {
   return strCloud
 }
 
-func saveCloud(cloud: [SIMD3<Float>]) -> Bool {
+func saveCloud(voxels: [SIMD3<Int32>: VoxelState]) -> Bool {
   guard let docDirectory = FileManager.default.urls(
     for: .documentDirectory, in: .userDomainMask
   ).first else {
@@ -45,6 +58,16 @@ func saveCloud(cloud: [SIMD3<Float>]) -> Bool {
   let fileURL = docDirectory.appendingPathComponent(
     "cloud_\(dateStr).ply"
   )
+
+  var cloud: [SIMD3<Float>] = []
+  for voxelState in voxels.values {
+    let point = SIMD3<Float>(
+      x: voxelState.sum.x / Float(voxelState.count),
+      y: voxelState.sum.y / Float(voxelState.count),
+      z: voxelState.sum.z / Float(voxelState.count)
+    )
+    cloud.append(point)
+  }
 
   do {
     try serializeCloud(cloud: cloud)
@@ -216,12 +239,26 @@ struct ARViewContainer: UIViewRepresentable {
               height: height,
               rgbWidth: imWidth
             )
-            scanState.points.append(contentsOf: cameraToWorldCoord(
+            let newPoints = cameraToWorldCoord(
               cloud: cloud,
               transform: frame.camera.transform
-            ))
+            )
+            for point in newPoints {
+              let voxel = SIMD3<Int32>(
+                x: Int32(floor(point.x / scanState.voxelPerDimRes)),
+                y: Int32(floor(point.y / scanState.voxelPerDimRes)),
+                z: Int32(floor(point.z / scanState.voxelPerDimRes)),
+              )
+              scanState.voxels[
+                voxel,
+                default: VoxelState(
+                  sum: SIMD3<Float32>(x: 0.0, y: 0.0, z: 0.0),
+                  count: 0
+                )
+              ] += VoxelState(sum: point, count: 1)
+            }
             scanState.numKeyFrames += 1
-            print("Point cloud has \(scanState.points.count) points and \(scanState.numKeyFrames) key frames.")
+            print("Point cloud has \(scanState.voxels.count) points and \(scanState.numKeyFrames) key frames.")
           }
         }
       } else {
@@ -257,11 +294,11 @@ struct ContentView: View {
             if state.isScanning {
               state.scanStatus = "End Scan"
             } else {
-              if saveCloud(cloud: state.points) {
-                print("Saved cloud with \(state.points.count) points")
+              if saveCloud(voxels: state.voxels) {
+                print("Saved cloud with \(state.voxels.count) points")
               }
               state.scanStatus = "Begin Scan"
-              state.points = []
+              state.voxels = [:]
               state.numKeyFrames = 0
               state.lastKeyFrameTransform = nil
             }
