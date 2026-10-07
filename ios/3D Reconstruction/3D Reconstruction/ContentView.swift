@@ -10,6 +10,7 @@ import SwiftUI
 import RealityKit
 import ARKit
 import simd
+import QuartzCore
 
 struct VoxelState {
   var sum: SIMD3<Float>
@@ -23,10 +24,16 @@ extension VoxelState {
   }
 }
 
+class ScanWorker {
+  let workQueue = DispatchQueue(label: "scan_worker", qos: .userInitiated)
+  var voxels: [SIMD3<Int32>: VoxelState] = [:]
+  var isBusy = false
+}
+
 @Observable class ScanState {
   var isScanning = false
+  var isSaving = false
   var scanStatus = "Begin Scan"
-  @ObservationIgnored var voxels: [SIMD3<Int32>: VoxelState] = [:]
   var numKeyFrames = 0
   var lastKeyFrameTransform: simd_float4x4? = nil
   let voxelPerDimRes: Float = 0.02 // 8 cubic centimeters (2 centimeters per dimension)
@@ -46,6 +53,7 @@ func serializeCloud(cloud: [SIMD3<Float>]) -> String {
 }
 
 func saveCloud(voxels: [SIMD3<Int32>: VoxelState]) -> Bool {
+  let startTime = CACurrentMediaTime()
   guard let docDirectory = FileManager.default.urls(
     for: .documentDirectory, in: .userDomainMask
   ).first else {
@@ -80,25 +88,30 @@ func saveCloud(voxels: [SIMD3<Int32>: VoxelState]) -> Bool {
     print("Failed to save file: \(error)")
     return false
   }
+  let elapsed = CACurrentMediaTime() - startTime
+  print("Cloud save took: \(elapsed)s")
   return true
 }
 
 struct ARViewContainer: UIViewRepresentable {
 
   var scanState: ScanState
+  var scanWorker: ScanWorker
 
   func makeCoordinator() -> Coordinator {
-    Coordinator(state: scanState)
+    Coordinator(state: scanState, worker: scanWorker)
   }
 
   class Coordinator: NSObject, ARSessionDelegate {
 
-      init(state: ScanState) {
+      init(state: ScanState, worker: ScanWorker) {
           self.scanState = state
+          self.scanWorker = worker
           super.init()
     }
 
     var scanState: ScanState
+    var scanWorker: ScanWorker
     let transThresh = Float(0.05) // 5 cm
     let rotThresh = Float(10.0)     // 10 degrees
 
@@ -224,41 +237,56 @@ struct ARViewContainer: UIViewRepresentable {
       guard frame.camera.trackingState == .normal
         && scanState.isScanning else { return }
       if let depthData = frame.sceneDepth {
-        if isKeyFrame(transform: frame.camera.transform) {
-          let buf: CVPixelBuffer = depthData.depthMap
-          let width = CVPixelBufferGetWidth(buf)
-          let height = CVPixelBufferGetHeight(buf)
-          let img: CVPixelBuffer = frame.capturedImage
-          let imWidth = CVPixelBufferGetWidth(img)
-          if let confBuf: CVPixelBuffer = depthData.confidenceMap {
-            let cloud: [SIMD3<Float>] = getCloud(
-              depthBuf: buf,
-              confBuf: confBuf,
-              intrinsics: frame.camera.intrinsics,
-              width: width,
-              height: height,
-              rgbWidth: imWidth
-            )
-            let newPoints = cameraToWorldCoord(
-              cloud: cloud,
-              transform: frame.camera.transform
-            )
-            for point in newPoints {
-              let voxel = SIMD3<Int32>(
-                x: Int32(floor(point.x / scanState.voxelPerDimRes)),
-                y: Int32(floor(point.y / scanState.voxelPerDimRes)),
-                z: Int32(floor(point.z / scanState.voxelPerDimRes)),
-              )
-              scanState.voxels[
-                voxel,
-                default: VoxelState(
-                  sum: SIMD3<Float32>(x: 0.0, y: 0.0, z: 0.0),
-                  count: 0
-                )
-              ] += VoxelState(sum: point, count: 1)
+        if !scanWorker.isBusy && isKeyFrame(transform: frame.camera.transform) {
+          scanWorker.isBusy = true
+          let startTime = CACurrentMediaTime()
+          scanWorker.workQueue.async {
+            defer {
+              DispatchQueue.main.async {
+                self.scanWorker.isBusy = false
+                self.scanState.numKeyFrames += 1
+                print("Point cloud has \(self.scanWorker.voxels.count) points and \(self.scanState.numKeyFrames) key frames.")
+              }
             }
-            scanState.numKeyFrames += 1
-            print("Point cloud has \(scanState.voxels.count) points and \(scanState.numKeyFrames) key frames.")
+            let buf: CVPixelBuffer = depthData.depthMap
+            let width = CVPixelBufferGetWidth(buf)
+            let height = CVPixelBufferGetHeight(buf)
+            let img: CVPixelBuffer = frame.capturedImage
+            let imWidth = CVPixelBufferGetWidth(img)
+            if let confBuf: CVPixelBuffer = depthData.confidenceMap {
+                let cloud: [SIMD3<Float>] = self.getCloud(
+                depthBuf: buf,
+                confBuf: confBuf,
+                intrinsics: frame.camera.intrinsics,
+                width: width,
+                height: height,
+                rgbWidth: imWidth
+              )
+                let newPoints = self.cameraToWorldCoord(
+                cloud: cloud,
+                transform: frame.camera.transform
+              )
+              for point in newPoints {
+                let voxel = SIMD3<Int32>(
+                    x: Int32(floor(point.x / self.scanState.voxelPerDimRes)),
+                    y: Int32(floor(point.y / self.scanState.voxelPerDimRes)),
+                    z: Int32(floor(point.z / self.scanState.voxelPerDimRes)),
+                )
+                  self.scanWorker.voxels[
+                  voxel,
+                  default: VoxelState(
+                    sum: SIMD3<Float32>(x: 0.0, y: 0.0, z: 0.0),
+                    count: 0
+                  )
+                ] += VoxelState(sum: point, count: 1)
+              }
+              let elapsed = CACurrentMediaTime() - startTime
+              print("Key frame processing took: \(elapsed)s")
+            }
+          }
+        } else {
+          if scanWorker.isBusy {
+            print("Skipped frame because scan worker is busy.")
           }
         }
       } else {
@@ -285,8 +313,9 @@ struct ARViewContainer: UIViewRepresentable {
 
 struct ContentView: View {
     @State var state = ScanState()
+    @State var worker = ScanWorker()
     var body: some View {
-      ARViewContainer(scanState: state)
+        ARViewContainer(scanState: state, scanWorker: worker)
         .ignoresSafeArea()
         .overlay(
           Button(state.scanStatus) {
@@ -294,15 +323,24 @@ struct ContentView: View {
             if state.isScanning {
               state.scanStatus = "End Scan"
             } else {
-              if saveCloud(voxels: state.voxels) {
-                print("Saved cloud with \(state.voxels.count) points")
+              state.isSaving = true
+              worker.workQueue.async {
+                defer {
+                  DispatchQueue.main.async {
+                    state.scanStatus = "Begin Scan"
+                    state.numKeyFrames = 0
+                    state.lastKeyFrameTransform = nil
+                    state.isSaving = false
+                  }
+                }
+                if saveCloud(voxels: worker.voxels) {
+                  print("Saved cloud with \(worker.voxels.count) points")
+                }
+                worker.voxels = [:]
               }
-              state.scanStatus = "Begin Scan"
-              state.voxels = [:]
-              state.numKeyFrames = 0
-              state.lastKeyFrameTransform = nil
+              state.scanStatus = "Saving"
             }
-          }
+          }.disabled(state.isSaving)
           .buttonStyle(.borderedProminent)
           .padding(.bottom, 30)
           , alignment: .bottom
