@@ -99,6 +99,35 @@ extension DepthFrame {
     func depth(u: Int, v: Int) -> Float {
         return self.depthValues[v * self.depthWidth + u]
     }
+
+    func confidence(u: Int, v: Int) -> UInt8 {
+        return self.confScores[v * self.depthWidth + u]
+    }
+
+    func worldPoints() -> [SIMD3<Float>] {
+        var cloud: [SIMD3<Float>] = []
+        cloud.reserveCapacity(depthWidth * depthHeight)
+        let k = intrinsics
+        for v in 0..<depthHeight {
+            for u in 0..<depthWidth {
+                let conf = confidence(u: u, v: v)
+                let depth = depth(u: u, v: v)
+                guard conf == ARConfidenceLevel.high.rawValue, depth > 0 else { continue }
+                // unproject depth to camera space
+                let x = (Float(u) - k.cx) * depth / k.fx
+                let y = (Float(v) - k.cy) * depth / k.fy
+                // Flip from image convention to camera convention and transform to world space
+                let point = transform * SIMD4<Float>(
+                    x: x,
+                    y: -y,
+                    z: -depth,
+                    w: 1
+                )
+                cloud.append(SIMD3<Float>(x: point.x, y: point.y, z: point.z))
+            }
+        }
+        return cloud
+    }
 }
 
 enum DepthFrameValidationError: Error {

@@ -33,4 +33,77 @@ struct DepthFrameTests {
         }
     }
 
+    @Test func centerPixel() throws {
+
+        let width = 3
+        let height = 3
+        let depthVal: Float = 5.0
+        // For a 3x3 pixel image, the center pixel is at (1,1) = idx 3 * 1 + 1 = 4
+        // NOTE: to make the math easy, always use odd numbers for depth image's width
+        //       and height so there is an exact center pixel.
+        let centerIdx = 4
+
+        var depth: [Float] = Array(repeating: 0.0, count: width * height)
+        depth[centerIdx] = depthVal
+        let frame = DepthFrame(
+            transform: matrix_identity_float4x4,
+            intrinsics: Intrinsics(fx: 1.0, fy: 1.0, cx: 1.0, cy: 1.0),
+            depthWidth: width,
+            depthHeight: height,
+            depthValues: depth,
+            confScores: Array(repeating: 2, count: width * height)
+        )
+
+        let points = frame.worldPoints()
+        try #require(points.count == 1)
+        #expect(points[0] == SIMD3<Float>(0, 0, -depthVal))
+    }
+
+    @Test func offCenterPixel() throws {
+        /*
+        Testing the pixels around the center have the correct signs.
+        Pixel to the right of center should have +x
+        Pixel below the center should have -y
+        */
+
+        let width = 3
+        let height = 3
+        let depthVal: Float = 5.0
+        // For a 3x3 pixel image, the center pixel is at (1,1) = idx 3 * 1 + 1 = 4
+        // NOTE: to make the math easy, always use odd numbers for depth image's width
+        //       and height so there is an exact center pixel.
+        let centerIdx = 4
+
+        // Test +x first.
+        var depth: [Float] = Array(repeating: 0.0, count: width * height)
+        depth[centerIdx + 1] = depthVal
+        let frame = DepthFrame(
+            transform: matrix_identity_float4x4,
+            intrinsics: Intrinsics(fx: 2.0, fy: 4.0, cx: 1.0, cy: 1.0),
+            depthWidth: width,
+            depthHeight: height,
+            depthValues: depth,
+            confScores: Array(repeating: 2, count: width * height)
+        )
+
+        let points = frame.worldPoints()
+        try #require(points.count == 1)
+        #expect(points[0] == SIMD3<Float>(2.5, 0.0, -5.0))
+
+        // Test -y next.
+        depth[centerIdx + 1] = 0.0
+        depth[centerIdx + width] = depthVal
+        let frame2 = DepthFrame(
+            transform: matrix_identity_float4x4,
+            intrinsics: Intrinsics(fx: 2.0, fy: 4.0, cx: 1.0, cy: 1.0),
+            depthWidth: width,
+            depthHeight: height,
+            depthValues: depth,
+            confScores: Array(repeating: 2, count: width * height)
+        )
+
+        let points2 = frame2.worldPoints()
+        try #require(points2.count == 1)
+        #expect(points2[0] == SIMD3<Float>(0.0, -1.25, -5.0))
+    }
 }
