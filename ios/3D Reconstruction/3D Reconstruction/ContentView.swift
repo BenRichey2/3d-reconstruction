@@ -12,21 +12,11 @@ import ARKit
 import simd
 import QuartzCore
 
-struct VoxelState {
-  var sum: SIMD3<Float>
-  var count: Int
-}
-
-extension VoxelState {
-  static func += (left:  inout VoxelState, right: VoxelState) {
-    left.sum += right.sum
-    left.count += right.count
-  }
-}
+let VOXEL_SIZE: Float = 0.02 // 8 cubic centimeters (2 centimeters per dimension)
 
 class ScanWorker {
   let workQueue = DispatchQueue(label: "scan_worker", qos: .userInitiated)
-  var voxels: [SIMD3<Int32>: VoxelState] = [:]
+  var voxelGrid = VoxelGrid(voxelSize: VOXEL_SIZE)
   var isBusy = false
 }
 
@@ -36,7 +26,6 @@ class ScanWorker {
   var scanStatus = "Begin Scan"
   var numKeyFrames = 0
   var lastKeyFrameTransform: simd_float4x4? = nil
-  let voxelPerDimRes: Float = 0.02 // 8 cubic centimeters (2 centimeters per dimension)
 }
 
 func serializeCloud(cloud: [SIMD3<Float>]) -> String {
@@ -52,7 +41,7 @@ func serializeCloud(cloud: [SIMD3<Float>]) -> String {
   return strCloud
 }
 
-func saveCloud(voxels: [SIMD3<Int32>: VoxelState]) -> Bool {
+func saveCloud(voxelGrid: VoxelGrid) -> Bool {
   let startTime = CACurrentMediaTime()
   guard let docDirectory = FileManager.default.urls(
     for: .documentDirectory, in: .userDomainMask
@@ -67,18 +56,8 @@ func saveCloud(voxels: [SIMD3<Int32>: VoxelState]) -> Bool {
     "cloud_\(dateStr).ply"
   )
 
-  var cloud: [SIMD3<Float>] = []
-  for voxelState in voxels.values {
-    let point = SIMD3<Float>(
-      x: voxelState.sum.x / Float(voxelState.count),
-      y: voxelState.sum.y / Float(voxelState.count),
-      z: voxelState.sum.z / Float(voxelState.count)
-    )
-    cloud.append(point)
-  }
-
   do {
-    try serializeCloud(cloud: cloud)
+    try serializeCloud(cloud: voxelGrid.cloud)
       .write(
         to: fileURL,
         atomically: true,
@@ -245,7 +224,7 @@ struct ARViewContainer: UIViewRepresentable {
               DispatchQueue.main.async {
                 self.scanWorker.isBusy = false
                 self.scanState.numKeyFrames += 1
-                print("Point cloud has \(self.scanWorker.voxels.count) points and \(self.scanState.numKeyFrames) key frames.")
+                print("Point cloud has \(self.scanWorker.voxelGrid.count) points and \(self.scanState.numKeyFrames) key frames.")
               }
             }
             let buf: CVPixelBuffer = depthData.depthMap
@@ -267,18 +246,7 @@ struct ARViewContainer: UIViewRepresentable {
                 transform: frame.camera.transform
               )
               for point in newPoints {
-                let voxel = SIMD3<Int32>(
-                    x: Int32(floor(point.x / self.scanState.voxelPerDimRes)),
-                    y: Int32(floor(point.y / self.scanState.voxelPerDimRes)),
-                    z: Int32(floor(point.z / self.scanState.voxelPerDimRes)),
-                )
-                  self.scanWorker.voxels[
-                  voxel,
-                  default: VoxelState(
-                    sum: SIMD3<Float32>(x: 0.0, y: 0.0, z: 0.0),
-                    count: 0
-                  )
-                ] += VoxelState(sum: point, count: 1)
+                self.scanWorker.voxelGrid.insert(point)
               }
               let elapsed = CACurrentMediaTime() - startTime
               print("Key frame processing took: \(elapsed)s")
@@ -333,10 +301,10 @@ struct ContentView: View {
                     state.isSaving = false
                   }
                 }
-                if saveCloud(voxels: worker.voxels) {
-                  print("Saved cloud with \(worker.voxels.count) points")
+                if saveCloud(voxelGrid: worker.voxelGrid) {
+                  print("Saved cloud with \(worker.voxelGrid.count) points")
                 }
-                worker.voxels = [:]
+                worker.voxelGrid = VoxelGrid(voxelSize: VOXEL_SIZE)
               }
               state.scanStatus = "Saving"
             }
