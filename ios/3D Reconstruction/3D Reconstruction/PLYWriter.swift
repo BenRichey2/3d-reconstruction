@@ -9,7 +9,7 @@ enum PLYWriter {
         strCloud += "property float z\n"
         strCloud += "end_header\n"
         for point in points {
-          strCloud += "\(point.x) \(point.y) \(point.z)\n"
+            strCloud += "\(point.x) \(point.y) \(point.z)\n"
         }
         return strCloud
     }
@@ -17,7 +17,7 @@ enum PLYWriter {
         let str = serialize(points: points)
         try str.write(to: url, atomically: true, encoding: .ascii)
     }
-    static func newPLYPath() throws -> URL{
+    static func newPLYPath() throws -> URL {
         guard let docDirectory = FileManager.default.urls(
             for: .documentDirectory,
             in: .userDomainMask
@@ -25,7 +25,7 @@ enum PLYWriter {
             throw PLYError.failedDirectory
         }
         let formatter = DateFormatter()
-        formatter.dateFormat = "yyy-MM-dd-HH-mm-ss"
+        formatter.dateFormat = "yyyy-MM-dd-HH-mm-ss"
         let dateStr = formatter.string(from: Date())
         return docDirectory.appendingPathComponent("cloud_\(dateStr).ply")
     }
